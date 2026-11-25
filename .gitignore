@@ -1,0 +1,24 @@
+# Runtime + secrets — never commit
+.env
+.env.bak*
+state.json
+state.json.*
+*.bak
+*.bak.*
+logs/
+LIVE
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+
+# === git-tracked repo (2026-11-25) ===
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+*.lock
+*.wlock
+*.heartbeat
+

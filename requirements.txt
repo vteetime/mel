@@ -1,0 +1,6 @@
+# mel — runtime dependencies.
+# Pinned to the versions mel is tested and running against.
+# Deliberately short: Telegram delivery uses the stdlib (urllib), and .env parsing is a
+# local helper, so neither requests nor python-dotenv is required.
+ccxt==4.5.78
+PyYAML==6.0.3

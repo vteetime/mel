@@ -1,0 +1,111 @@
+# mel — Kraken Futures XRP/USD:USD. TPS scoreboard, ONE TP (4%) + ONE SL.
+#
+# Successor to Kitt (Kraken ETH/USD:USD, parked). Same proven Kraken engine (native resting
+# SL + limit TP, stop-is-confirmed, orphan adoption, settlement-from-venue-evidence), rebuilt
+# for the TPS strategy on XRP at 1h/4h with flat 90% sizing. See
+# /opt/data/KITT_XRP_TPS_SUCCESSION_DESIGN.md for the full spec and the frozen backtest evidence.
+#
+# STATUS: ARMED 2026-10-15 (LIVE sentinel present, Terra R4 SHIP). Arm/disarm via the sentinel only.
+#
+# ── WHAT IS DELIBERATELY IDENTICAL TO KITT (the donor Kraken engine) ─────────
+#   strategy scoreboard weights, entry threshold, indicators, the stop floor, the single-TP exit
+#   shape, the 24h hold cap, the protective-integrity guards, the two-switch arming rule.
+# ── THE DELIBERATE DIFFERENCES FROM KITT ─────────────────────────────────────
+#   symbol ETH/USD:USD -> XRP/USD:USD ; base 15m/HTF 1h -> base 1h/HTF 4h (native) ;
+#   sizing 50% -> 90% ; confidence_scaling OFF (flat) ; drawdown -25 -> -15 ;
+#   daily loss -10 -> -8 ; cooldown grid 15m -> 1h.
+
+bot:
+  id: mel
+  label: "Mel · Kraken XRP"
+  exchange: krakenfutures
+  symbol: XRP/USD:USD
+  ccxt_symbol: "XRP/USD:USD"
+  quote: USDT                      # Kraken futures collateral is USDT (verified live)
+
+# ── Sizing / risk ────────────────────────────────────────────────────────────
+# Tee's instruction for the successor (Joe, 2026-10-14): 90% of free collateral, 2x, flat.
+sizing:
+  leverage: 2
+  max_margin_fraction: 0.90        # 90% of FREE collateral per position (the tested 1.8x notional)
+  min_margin_usdt: 10.0            # refuse to trade below this (fees dominate)
+  confidence_scaling: false        # FLAT sizing — matches the validated backtest
+  dry_run_equity: 1000.0           # only used when the balance read itself fails
+  # ── CONTRACT SIZE: XRP IS WHOLE UNITS ──────────────────────────────────────
+  # XRP/USD:USD has contractSize 1.0 AND amount precision 1.0 (verified live 2026-10-14), so
+  # the order amount IS whole XRP: ~955 XRP, NOT a fractional contract count. The engine floors
+  # to the market's amount step (1.0), so a correct ~955.3-XRP order becomes 955, never 0.
+  # `min_contracts` is the floor we refuse below: one whole XRP.
+  min_contracts: 1.0
+
+# ── Strategy: TPS additive scoreboard — UNCHANGED FROM THE FROZEN SPEC ───────
+strategy:
+  base_timeframe: 1h
+  htf_timeframe: 4h               # NATIVE 4h candles, not a 1h resample (fetch_ohlcv "4h")
+  base_window: 200               # bars
+  htf_window: 100
+  score:
+    ema_cross: 2
+    rsi_extreme: 2               # RSI < 35 long / > 65 short
+    rsi_lean: 1                  # RSI < 45 long / > 55 short
+    bb_extreme: 2                # %B < 15 long / > 85 short
+    bb_lean: 1                   # %B < 35 long / > 65 short
+    macd_hist: 1
+    htf_trend: 2
+    volume: 1                    # surging/elevated -> both sides
+  entry_threshold: 5             # enter only at score >= 5 and strictly ahead
+
+indicators:
+  rsi_period: 14
+  ema_fast: 20
+  ema_slow: 50
+  atr_period: 14
+  bb_period: 20
+  bb_std: 2.0
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  htf_ema_fast: 20
+  htf_ema_slow: 50
+  volume_lookback: 20
+
+# ── Exits: ONE TP, ONE SL (frozen single-tp preset) ─────────────────────────
+# Stop is max(ATR% x 1.5, 2.5%). The 2.5% FLOOR is load-bearing (bare ATRx1.5 stopped 72% of
+# trades vs 18.6% live). One TP at 4% for the FULL position. No partials, no runner, no breakeven.
+exits:
+  sl_atr_mult: 1.5
+  sl_pct_floor: 0.025            # hard floor on stop distance
+  tp_pct: 0.04                   # THE single take-profit, full size
+  runner_enabled: false          # no trailing runner
+  max_hold_hours: 24             # time stop, anchor = fill -> market close at the cap
+
+# ── Guards ───────────────────────────────────────────────────────────────────
+guards:
+  # Loss caps are percentages of EQUITY. db.stats() converts each trade row from margin ROE using
+  # the margin fraction recorded at entry; a row with no fraction counts as 1.0 (fail-closed).
+  max_daily_trades: 2
+  max_sl_restores: 2             # times ONE position may lose + restore its stop before closing
+  max_unverified_settlements: 1  # halt new entries while a settled trade rests on an ESTIMATE
+  max_consecutive_sl_failures: 2 # halt after repeated protective-stop failures (broken safety path)
+  cooldown_candles: 3            # 1h candles to wait after a close (3h on the 1h grid)
+  max_consecutive_losses: 3      # blocks entries for the REST OF THE UTC DAY (day-bounded reset)
+  daily_loss_cap_pct: -8.0       # of starting-of-day equity; 0 disables
+  max_drawdown_pct: -15.0        # of cumulative equity P&L; blocks entries while below
+  min_risk_reward: 1.0           # TP distance / SL distance -> 4% / 2.5% = 1.6
+  block_counter_trend: true      # no SHORT into a strong HTF uptrend and vice versa
+  counter_trend_strong_pct: 3.0  # EMA separation % considered "strong"
+  counter_trend_min_conf: 8
+  block_rsi_extreme: true        # no LONG above 75, no SHORT below 25
+  block_bb_extreme: true         # no LONG above %B 90, no SHORT below 10
+  # NOTE: Kitt's inert `drawdown_scale_step: 0.5` key is deliberately ABSENT here — no code read it,
+  # and the validated spec is flat sizing (no drawdown scaling).
+
+# ── Operations ───────────────────────────────────────────────────────────────
+ops:
+  state_file: state.json
+  log_dir: logs
+  lock_file: /tmp/mel.lock   # own lock — never shared with another bot
+  db_path: /opt/data/cic/trades.db
+  dry_run_default: true          # MUST be flipped deliberately to go live
+  alert_prefix: "🐝 Mel (XRP 1h)"
+  evidence_recovery_ticks: 3     # ticks a close may wait for venue fill history before recording
